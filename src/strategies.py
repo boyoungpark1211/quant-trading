@@ -153,6 +153,59 @@ def donchian_breakout_confirmed(
     return _positions_from_signals(entry_signal.fillna(False), exit_signal)
 
 
+def bollinger_squeeze_breakout(
+    df: pd.DataFrame,
+    bb_period: int = 20,
+    bb_std: float = 2.0,
+    squeeze_lookback: int = 120,
+    squeeze_percentile: float = 0.20,
+) -> pd.Series:
+    """Volatility-regime breakout: go long when price breaks above the upper Bollinger Band
+    *and* that band was unusually narrow (a "squeeze") just before the break; exit when price
+    falls back below the middle band (the SMA).
+
+    Different mechanism from donchian_breakout: Donchian reacts to a raw N-day price extreme
+    regardless of how volatile the recent past was. This strategy instead conditions the
+    breakout on a volatility *regime* -- it only takes breakouts that follow an unusually quiet
+    period (bandwidth in the bottom `squeeze_percentile` of its own trailing
+    `squeeze_lookback`-day distribution), on the hypothesis that a breakout out of compressed
+    volatility carries more signal (a real regime change) than a breakout during already-wide,
+    choppy bands (more likely noise). `bb_period`/`bb_std` are left at their textbook-standard
+    values (20-day SMA, 2 std devs) rather than swept, since they define what "the bands" even
+    are; `squeeze_lookback` and `squeeze_percentile` are this hypothesis's actual free
+    parameters and are the ones the sweep grid-searches.
+
+    Rejected after walk-forward validation: looked promising in-sample (94% of a 36-combo train
+    sweep beat buy&hold, best Sharpe 1.10) but all four validated candidates collapsed on the
+    held-out test split (Sharpe 0.35-0.60, well below both buy&hold and donchian_25_10). Kept
+    here for reference/comparison, not as a live candidate -- see validate_bollinger_squeeze.py.
+
+    All bands/percentile-rank inputs are shifted by one day before comparing against today's
+    close, so the entry/exit decision at time t only ever uses information known through t-1
+    (today's close isn't part of today's own trigger threshold) -- same convention as
+    donchian_breakout's `.shift(1)` on its rolling max/min.
+    """
+    close = df["close"]
+    mid = close.rolling(bb_period).mean()
+    std = close.rolling(bb_period).std()
+    upper = mid + bb_std * std
+    lower = mid - bb_std * std
+    bandwidth = (upper - lower) / mid
+
+    # Percentile rank of each day's bandwidth within its own trailing window: fraction of the
+    # last `squeeze_lookback` days with bandwidth <= today's. Low value = unusually narrow bands.
+    bandwidth_percentile = bandwidth.rolling(squeeze_lookback).apply(
+        lambda w: (w <= w[-1]).mean(), raw=True
+    )
+
+    was_squeezed = (bandwidth_percentile <= squeeze_percentile).shift(1, fill_value=False)
+    breakout_up = close > upper.shift(1)
+    entry_signal = was_squeezed & breakout_up
+    exit_signal = close <= mid.shift(1)
+
+    return _positions_from_signals(entry_signal.fillna(False), exit_signal)
+
+
 def rsi_mean_reversion(df: pd.DataFrame, period: int = 14, oversold: int = 30, exit_level: int = 50) -> pd.Series:
     """Contrarian: buy when RSI drops below `oversold` (price fell hard, fast), hold until RSI
     recovers above `exit_level`. Opposite hypothesis to the trend-followers above — bets that
