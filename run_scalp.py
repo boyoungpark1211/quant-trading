@@ -1,4 +1,6 @@
-"""₩10,000 virtual scalping run: RSI(2) mean-reversion bracket scalp on Upbit BTC/KRW 1-minute bars."""
+"""₩10,000 virtual scalping run: compare RSI(2) mean-reversion vs. momentum breakout on Upbit
+BTC/KRW 1-minute bars, same bracket-order execution for both.
+"""
 
 import json
 from pathlib import Path
@@ -7,43 +9,44 @@ import matplotlib.pyplot as plt
 
 from src.data import fetch_ohlcv
 from src.scalping_backtest import run_scalp_backtest
+from src.scalping_signals import momentum_breakout_signal, rsi_oversold_signal
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 STARTING_CAPITAL_KRW = 10_000
 
 
 def main() -> None:
-    df = fetch_ohlcv("upbit", "BTC/KRW", timeframe="1m", since="2026-07-30")
-    print(f"Loaded {len(df)} 1-minute candles: {df.index[0]} -> {df.index[-1]}")
+    df = fetch_ohlcv("upbit", "BTC/KRW", timeframe="1m", since="2026-07-10")
+    print(f"Loaded {len(df)} 1-minute candles: {df.index[0]} -> {df.index[-1]}\n")
 
-    result = run_scalp_backtest(df, starting_capital=STARTING_CAPITAL_KRW)
-    m = result.metrics
+    runs = {
+        "rsi_mean_reversion": run_scalp_backtest(
+            df, rsi_oversold_signal(df, period=2, threshold=15.0), starting_capital=STARTING_CAPITAL_KRW
+        ),
+        "momentum_breakout": run_scalp_backtest(
+            df, momentum_breakout_signal(df, lookback=10), starting_capital=STARTING_CAPITAL_KRW
+        ),
+    }
 
-    print(f"\nStarting capital: {STARTING_CAPITAL_KRW:,}원")
-    print(f"Final capital:    {m['final_capital']:,.0f}원")
-    print(f"Total return:     {m['total_return_pct']}%")
-    print(f"Trades:           {m['n_trades']}  (win rate {m['win_rate_pct']}%)")
-    print(f"  take-profit hits: {m['tp_hits']}   stop-loss hits: {m['sl_hits']}   timeouts: {m['timeouts']}")
-    print(f"Avg return/trade: {m['avg_return_per_trade_pct']}%")
+    print(f"{'strategy':<20}{'return%':>10}{'final':>10}{'trades':>8}{'win%':>7}{'tp':>5}{'sl':>5}{'timeout':>9}")
+    for name, result in runs.items():
+        m = result.metrics
+        print(
+            f"{name:<20}{m['total_return_pct']:>10}{m['final_capital']:>10.0f}{m['n_trades']:>8}"
+            f"{m['win_rate_pct']:>7}{m['tp_hits']:>5}{m['sl_hits']:>5}{m['timeouts']:>9}"
+        )
 
     RESULTS_DIR.mkdir(exist_ok=True)
     with open(RESULTS_DIR / "scalp_metrics.json", "w") as f:
-        json.dump(m, f, indent=2, ensure_ascii=False)
-    if not result.trades.empty:
-        result.trades.to_csv(RESULTS_DIR / "scalp_trades.csv", index=False)
+        json.dump({k: v.metrics for k, v in runs.items()}, f, indent=2, ensure_ascii=False)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    axes[0].plot(result.equity_curve.index, result.equity_curve.values)
-    axes[0].set_title(f"Equity curve — start {STARTING_CAPITAL_KRW:,}원")
-    axes[0].set_ylabel("KRW")
-    axes[0].tick_params(axis="x", rotation=30)
-
-    if not result.trades.empty:
-        axes[1].hist(result.trades["return_pct"], bins=30)
-        axes[1].axvline(0, color="black", linewidth=1)
-        axes[1].set_title(f"Per-trade return distribution ({len(result.trades)} trades)")
-        axes[1].set_xlabel("return % per trade (after both fees)")
-
+    plt.figure(figsize=(11, 6))
+    for name, result in runs.items():
+        plt.plot(result.equity_curve.index, result.equity_curve.values, label=name)
+    plt.axhline(STARTING_CAPITAL_KRW, color="black", linewidth=0.8, linestyle="--", label="starting capital")
+    plt.title(f"Scalping: RSI mean-reversion vs. momentum breakout (start {STARTING_CAPITAL_KRW:,} KRW)")
+    plt.ylabel("KRW")
+    plt.legend()
     plt.tight_layout()
     plt.savefig(RESULTS_DIR / "scalp_result.png", dpi=150)
     print(f"\nSaved {RESULTS_DIR / 'scalp_result.png'}")

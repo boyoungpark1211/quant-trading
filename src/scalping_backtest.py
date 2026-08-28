@@ -1,6 +1,10 @@
-"""Bracket-order scalping backtest: enter on a short-term RSI extreme, exit at a fixed
-take-profit, stop-loss, or after a max holding time. This is closer to how a scalper actually
-trades (bracket orders on a fill) than the signal-flip logic used for the daily swing strategies.
+"""Bracket-order scalping backtest: given an entry signal, exit at a fixed take-profit,
+stop-loss, or after a max holding time. This is closer to how a scalper actually trades
+(bracket orders on a fill) than the signal-flip logic used for the daily swing strategies.
+
+Entry signal generation lives in `scalping_signals.py` and is passed in as a boolean array,
+so different hypotheses (mean-reversion, momentum, ...) share the exact same execution
+mechanics — the only fair way to compare them.
 
 Numpy-array loop (not pandas .iloc) — this gets called dozens/hundreds of times in a parameter
 sweep, and .iloc row access is slow enough to matter at that scale.
@@ -19,41 +23,20 @@ class ScalpResult:
     metrics: dict
 
 
-def rsi(close: pd.Series, period: int) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, float("nan"))
-    return 100 - (100 / (1 + rs))
-
-
 def run_scalp_backtest(
     df: pd.DataFrame,
+    entry_signal: pd.Series,
     starting_capital: float,
-    rsi_period: int = 2,
-    rsi_entry: float = 15.0,
     take_profit_pct: float = 0.003,
     stop_loss_pct: float = 0.002,
     max_hold_bars: int = 30,
     fee_rate: float = 0.0005,  # Upbit KRW-market taker fee, per side
-    trend_ema_period: int | None = None,
-    require_uptrend: bool = True,
 ) -> ScalpResult:
-    """Long-only mean-reversion scalp: buy when RSI(rsi_period) drops below rsi_entry (a sharp,
-    short-term selloff), exit at +take_profit_pct, -stop_loss_pct, or after max_hold_bars bars,
-    whichever comes first. Fee is charged on both entry and exit.
-
-    trend_ema_period: if set, only take the entry when close is above (require_uptrend=True) or
-    below (False) that EMA — a filter against buying a dip that's actually a falling knife inside
-    a bigger downtrend, which is the classic failure mode for pure mean-reversion.
+    """entry_signal: boolean Series aligned to df.index -- True on bars where a long should be
+    opened (if not already in one). Exit at +take_profit_pct, -stop_loss_pct, or after
+    max_hold_bars bars, whichever comes first. Fee is charged on both entry and exit.
     """
-    signal_rsi = rsi(df["close"], rsi_period).to_numpy()
-    trend_ok = np.ones(len(df), dtype=bool)
-    if trend_ema_period:
-        ema = df["close"].ewm(span=trend_ema_period, adjust=False).mean().to_numpy()
-        close_arr = df["close"].to_numpy()
-        trend_ok = (close_arr > ema) if require_uptrend else (close_arr < ema)
-
+    signal_arr = entry_signal.reindex(df.index).fillna(False).to_numpy()
     o = df["open"].to_numpy()
     h = df["high"].to_numpy()
     l = df["low"].to_numpy()
@@ -70,8 +53,7 @@ def run_scalp_backtest(
 
     for i in range(n):
         if not in_position:
-            r = signal_rsi[i]
-            if not np.isnan(r) and r < rsi_entry and trend_ok[i]:
+            if signal_arr[i]:
                 in_position = True
                 entry_price = c[i]
                 entry_idx = i
