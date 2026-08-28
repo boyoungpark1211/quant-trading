@@ -17,7 +17,9 @@ src/
   exchange.py             # Binance Futures TESTNET connection only — hardcoded to sandbox, no path to a real account
 run.py                    # spot backtest entry point
 run_leverage.py            # leverage-sweep entry point
+run_vol_target.py           # flat leverage vs. volatility-targeted sizing, full period + walk-forward split
 testnet_bot.py              # SMA signal -> testnet order, dry-run by default (--live to actually place it)
+risk_report.md               # leverage safety findings + vol-targeted sizing results, for the Donchian variants
 results/                    # metrics/plots from the last run (gitignored)
 ```
 
@@ -47,13 +49,21 @@ returning a position series (1 = long, 0 = flat) indexed the same as `df`. Wire 
 ## Leverage sweep
 
 ```bash
-python3 run_leverage.py
+python3 run_leverage.py                       # default: SMA 50/200
+python3 run_leverage.py --strategy donchian_25_10
+python3 run_leverage.py --strategy donchian_70_20
 ```
 
-Same SMA 50/200 strategy, run at 1x–20x, using **real historical Binance funding-rate data** (not
-an assumed constant) and a per-day liquidation check against the day's low. Findings so far: this
-strategy loses to funding + daily-rebalance decay by 2x, and gets liquidated repeatedly at 3x+ —
-worth rerunning before trusting any leverage level on a different strategy.
+Runs a strategy at 1x–20x, using **real historical Binance funding-rate data** (not an assumed
+constant) and a per-day liquidation check against the day's low. SMA 50/200 loses to funding +
+daily-rebalance decay by 2x and gets liquidated repeatedly at 3x+. Donchian breakout (20/10,
+25/10, and 70/20 — see the parameter sweep below) is a different story: all three survive 2x
+*and* 3x with zero liquidations, only breaking down at 5x+. See `risk_report.md` for the full
+leverage sweep, a volatility-targeted position sizing extension (`src/leverage_backtest.py`:
+`compute_target_leverage` / `run_vol_targeted_backtest`, run via `run_vol_target.py`), and a
+concrete leverage/sizing recommendation — short version: 2x flat is the safe ceiling, 3x survives
+in-backtest but isn't practically usable (-85%+ drawdowns), and the vol-targeted sizing tested
+did **not** beat flat leverage on the walk-forward test split.
 
 ## Testnet bot (paper trading, real order flow, zero real money)
 

@@ -16,6 +16,11 @@ STRATEGIES = {
     "sma_50_200": lambda df: sma_crossover(df, fast=50, slow=200),
     "sma_20_50": lambda df: sma_crossover(df, fast=20, slow=50),
     "donchian_20_10": lambda df: donchian_breakout(df, entry_lookback=20, exit_lookback=10),
+    # Walk-forward-validated upgrades over 20/10 (see sweep_donchian.py / validate_donchian_upgrade.py):
+    # 25/10 is the best all-around (test Sharpe 1.46, CAGR 46%), 70/20 trades some Sharpe for
+    # much lower drawdown (test Sharpe 0.97, CAGR 26.6%, fewer/more selective trades).
+    "donchian_25_10": lambda df: donchian_breakout(df, entry_lookback=25, exit_lookback=10),
+    "donchian_70_20": lambda df: donchian_breakout(df, entry_lookback=70, exit_lookback=20),
     "rsi_mean_reversion": lambda df: rsi_mean_reversion(df, period=14, oversold=30, exit_level=50),
 }
 
