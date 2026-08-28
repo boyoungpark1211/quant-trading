@@ -1,5 +1,6 @@
 """OHLCV fetching via ccxt, with a local CSV cache so repeated backtest runs don't re-hit the exchange."""
 
+import time
 from pathlib import Path
 
 import ccxt
@@ -23,14 +24,21 @@ def fetch_ohlcv(
     if cache_path.exists():
         return pd.read_csv(cache_path, index_col="timestamp", parse_dates=True)
 
-    exchange = getattr(ccxt, exchange_id)()
+    exchange = getattr(ccxt, exchange_id)({"enableRateLimit": True})
     since_ms = exchange.parse8601(f"{since}T00:00:00Z")
     now_ms = exchange.milliseconds()
 
     rows = []
     cursor = since_ms
     while cursor < now_ms:
-        batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit_per_call)
+        for attempt in range(5):
+            try:
+                batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit_per_call)
+                break
+            except ccxt.RateLimitExceeded:
+                time.sleep(2 ** attempt)
+        else:
+            raise RuntimeError(f"Repeated rate-limit failures fetching {symbol} from {exchange_id}")
         if not batch:
             break
         rows.extend(batch)

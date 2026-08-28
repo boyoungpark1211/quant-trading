@@ -1,6 +1,9 @@
 """Bracket-order scalping backtest: enter on a short-term RSI extreme, exit at a fixed
 take-profit, stop-loss, or after a max holding time. This is closer to how a scalper actually
 trades (bracket orders on a fill) than the signal-flip logic used for the daily swing strategies.
+
+Numpy-array loop (not pandas .iloc) — this gets called dozens/hundreds of times in a parameter
+sweep, and .iloc row access is slow enough to matter at that scale.
 """
 
 from dataclasses import dataclass
@@ -32,29 +35,45 @@ def run_scalp_backtest(
     take_profit_pct: float = 0.003,
     stop_loss_pct: float = 0.002,
     max_hold_bars: int = 30,
-    fee_rate: float = 0.0005,  # Upbit KRW-market taker fee, per side — from exchange.describe()['options']['tradingFeesByQuoteCurrency']['KRW']
+    fee_rate: float = 0.0005,  # Upbit KRW-market taker fee, per side
+    trend_ema_period: int | None = None,
+    require_uptrend: bool = True,
 ) -> ScalpResult:
     """Long-only mean-reversion scalp: buy when RSI(rsi_period) drops below rsi_entry (a sharp,
     short-term selloff), exit at +take_profit_pct, -stop_loss_pct, or after max_hold_bars bars,
     whichever comes first. Fee is charged on both entry and exit.
-    """
-    signal_rsi = rsi(df["close"], rsi_period)
 
+    trend_ema_period: if set, only take the entry when close is above (require_uptrend=True) or
+    below (False) that EMA — a filter against buying a dip that's actually a falling knife inside
+    a bigger downtrend, which is the classic failure mode for pure mean-reversion.
+    """
+    signal_rsi = rsi(df["close"], rsi_period).to_numpy()
+    trend_ok = np.ones(len(df), dtype=bool)
+    if trend_ema_period:
+        ema = df["close"].ewm(span=trend_ema_period, adjust=False).mean().to_numpy()
+        close_arr = df["close"].to_numpy()
+        trend_ok = (close_arr > ema) if require_uptrend else (close_arr < ema)
+
+    o = df["open"].to_numpy()
+    h = df["high"].to_numpy()
+    l = df["low"].to_numpy()
+    c = df["close"].to_numpy()
+    idx = df.index
+
+    n = len(df)
     capital = starting_capital
-    equity_values = []
+    equity_values = np.empty(n)
     trades = []
 
     in_position = False
-    entry_price = entry_idx = target = stop = None
+    entry_price = entry_idx = target = stop = 0.0
 
-    for i in range(len(df)):
-        o, h, l, c = df["open"].iloc[i], df["high"].iloc[i], df["low"].iloc[i], df["close"].iloc[i]
-
+    for i in range(n):
         if not in_position:
-            r = signal_rsi.iloc[i]
-            if not np.isnan(r) and r < rsi_entry:
+            r = signal_rsi[i]
+            if not np.isnan(r) and r < rsi_entry and trend_ok[i]:
                 in_position = True
-                entry_price = c
+                entry_price = c[i]
                 entry_idx = i
                 target = entry_price * (1 + take_profit_pct)
                 stop = entry_price * (1 - stop_loss_pct)
@@ -63,14 +82,14 @@ def run_scalp_backtest(
             bars_held = i - entry_idx
             exit_price = None
             reason = None
-            if h >= target:
+            if h[i] >= target:
                 exit_price = target
                 reason = "take_profit"
-            elif l <= stop:
+            elif l[i] <= stop:
                 exit_price = stop
                 reason = "stop_loss"
             elif bars_held >= max_hold_bars:
-                exit_price = c
+                exit_price = c[i]
                 reason = "timeout"
 
             if exit_price is not None:
@@ -79,8 +98,8 @@ def run_scalp_backtest(
                 capital *= 1 - fee_rate
                 trades.append(
                     {
-                        "entry_time": df.index[entry_idx],
-                        "exit_time": df.index[i],
+                        "entry_time": idx[entry_idx],
+                        "exit_time": idx[i],
                         "entry_price": entry_price,
                         "exit_price": exit_price,
                         "bars_held": bars_held,
@@ -90,7 +109,7 @@ def run_scalp_backtest(
                 )
                 in_position = False
 
-        equity_values.append(capital)
+        equity_values[i] = capital
 
     equity_curve = pd.Series(equity_values, index=df.index)
     trades_df = pd.DataFrame(trades)
