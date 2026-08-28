@@ -34,6 +34,24 @@ def momentum_breakout_signal(df: pd.DataFrame, lookback: int = 10) -> pd.Series:
     return df["close"] >= rolling_high
 
 
+def momentum_spike_signal(
+    df: pd.DataFrame, roc_lookback_bars: int = 2, min_move_pct: float = 0.002, volume_mult: float | None = 2.0
+) -> pd.Series:
+    """A genuinely different hypothesis from momentum_breakout_signal above: that one fires on
+    ANY new N-bar high, including a slow grind up over N minutes. This one fires only on a sharp
+    price move within a SHORT number of bars (rate-of-change spike) -- an actual sudden surge,
+    not just "currently the highest price recently seen." Optionally requires the move to be
+    volume-confirmed (volume above its own rolling average by volume_mult), since a real surge
+    should trade on above-average size, not thin/illiquid drift.
+    """
+    roc = df["close"].pct_change(roc_lookback_bars)
+    signal = roc >= min_move_pct
+    if volume_mult is not None:
+        avg_volume = df["volume"].rolling(20).mean()
+        signal = signal & (df["volume"] > avg_volume * volume_mult)
+    return signal.fillna(False)
+
+
 def with_trend_filter(
     signal: pd.Series, df: pd.DataFrame, ema_period: int, require_uptrend: bool = True
 ) -> pd.Series:
