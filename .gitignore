@@ -5,3 +5,4 @@ data/*.csv
 results/*.png
 results/*.json
 .DS_Store
+.env

@@ -47,3 +47,41 @@ def fetch_ohlcv(
     DATA_DIR.mkdir(exist_ok=True)
     df.to_csv(cache_path)
     return df
+
+
+def fetch_daily_funding_rate(symbol: str = "BTC/USDT", since: str = "2019-09-01") -> pd.Series:
+    """Daily-aggregated historical funding rate for a USDM perpetual (paid/received every 8h on Binance).
+
+    Returns a Series indexed by day (midnight UTC) of that day's total funding rate — the real cost
+    (or income) of holding a long position for the day, not an assumption.
+    """
+    cache_path = DATA_DIR / f"funding_{symbol.replace('/', '-')}.csv"
+    if cache_path.exists():
+        s = pd.read_csv(cache_path, index_col="timestamp", parse_dates=True)["funding_rate"]
+        return s
+
+    exchange = ccxt.binanceusdm()
+    since_ms = exchange.parse8601(f"{since}T00:00:00Z")
+
+    rows = []
+    cursor = since_ms
+    while True:
+        batch = exchange.fetch_funding_rate_history(symbol, since=cursor, limit=1000)
+        if not batch:
+            break
+        rows.extend(batch)
+        last_ts = batch[-1]["timestamp"]
+        if last_ts == cursor:
+            break
+        cursor = last_ts + 1
+        if len(batch) < 1000:
+            break
+
+    raw = pd.DataFrame(rows)
+    raw["timestamp"] = pd.to_datetime(raw["timestamp"], unit="ms")
+    raw = raw.drop_duplicates(subset="timestamp").set_index("timestamp").sort_index()
+    daily = raw["fundingRate"].resample("1D").sum()
+
+    DATA_DIR.mkdir(exist_ok=True)
+    daily.rename("funding_rate").to_csv(cache_path, index_label="timestamp")
+    return daily
