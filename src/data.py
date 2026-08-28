@@ -25,20 +25,22 @@ def fetch_ohlcv(
 
     exchange = getattr(ccxt, exchange_id)()
     since_ms = exchange.parse8601(f"{since}T00:00:00Z")
+    now_ms = exchange.milliseconds()
 
     rows = []
     cursor = since_ms
-    while True:
+    while cursor < now_ms:
         batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit_per_call)
         if not batch:
             break
         rows.extend(batch)
         last_ts = batch[-1][0]
-        if last_ts == cursor:
+        if last_ts <= cursor:
+            # exchange returned a page that didn't move the cursor forward (e.g. hit a cap
+            # smaller than limit_per_call and kept re-serving the same window) — bail out
+            # rather than looping forever.
             break
         cursor = last_ts + 1
-        if len(batch) < limit_per_call:
-            break
 
     df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
